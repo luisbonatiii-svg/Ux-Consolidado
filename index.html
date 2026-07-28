@@ -6,6 +6,8 @@
 <title>UX Group — Dashboard de Atendimento</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --bg:#f4f5f7;
@@ -107,6 +109,32 @@
   .cal-day.no-data{ color:var(--text-muted);cursor:default;opacity:.4; }
   .cal-day.no-data:hover{ background:transparent; }
 
+  /* ===== Report Semanal (exportação PNG/PDF) ===== */
+  #printReportArea{
+    position:fixed; left:-9999px; top:0;
+    width:720px; background:#ffffff; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .rs-header{
+    background:linear-gradient(180deg,#e9e9e9 0%,#ffffff 100%);
+    padding:24px 32px 16px;
+  }
+  .rs-header h1{ font-size:34px;font-weight:700;letter-spacing:4px;margin:0;text-transform:uppercase;color:#1a1a1a; }
+  .rs-date{ background:#2b2b2b;color:#fff;font-weight:700;letter-spacing:2px;font-size:14px;padding:11px 32px;text-transform:uppercase; }
+  .rs-body{ padding:26px 32px; }
+  .rs-brand{ margin-bottom:26px; }
+  .rs-brand-head{ display:flex;align-items:center;justify-content:space-between;margin-bottom:6px; }
+  .rs-brand-left{ display:flex;align-items:center;gap:10px; }
+  .rs-brand-icon{ width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px; }
+  .rs-brand-name{ font-size:16px;font-weight:700;color:#1a1a1a; }
+  .rs-brand-demand{ font-size:13px;color:#6b6f76;font-weight:500; }
+  .rs-brand-demand b{ color:#1a1a1a;font-size:15px; }
+  .rs-brand-underline{ height:3px;border-radius:2px;margin-bottom:10px; }
+  .rs-box{ background:#e9e9e9;border-radius:6px;padding:14px 18px;min-height:50px; }
+  .rs-box ul{ margin:0;padding-left:18px;font-size:13.5px;line-height:1.7;color:#1a1a1a; }
+  .rs-box .empty{ font-size:13px;color:#6b6f76;font-style:italic; }
+  .rs-metric-note{ font-size:11px;color:#9a9ea5;margin-top:6px;font-style:italic; }
+  .rs-footer{ display:flex;justify-content:flex-end;padding:0 32px 24px; }
+
   .view{display:none;}
   .view.active{display:block;}
 
@@ -203,6 +231,11 @@
 
   <!-- ===================== WEEKLY VIEW ===================== -->
   <div id="view-weekly" class="view">
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:14px;">
+      <button onclick="downloadReport('png')" style="border:1px solid var(--text-primary);background:var(--text-primary);color:#fff;padding:9px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;">📄 Gerar imagem (PNG)</button>
+      <button onclick="downloadReport('pdf')" style="border:1px solid var(--border);background:#fff;color:var(--text-primary);padding:9px 16px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;">Gerar PDF</button>
+    </div>
 
     <div class="filter-row" style="margin-bottom:8px;align-items:flex-end;">
       <div class="filter-group">
@@ -323,6 +356,14 @@
   </div>
 
   <footer>Dashboard gerado com dados de exemplo — atualize os valores no arquivo com os números reais de cada marca.</footer>
+</div>
+
+<!-- Container oculto usado para gerar a imagem/PDF do Report Semanal -->
+<div id="printReportArea">
+  <div class="rs-header"><h1>Report semanal</h1></div>
+  <div class="rs-date" id="rs-date">DATA: —</div>
+  <div class="rs-body" id="rs-body"></div>
+  <div class="rs-footer"><span style="font-size:16px;font-weight:700;letter-spacing:1px;color:#1a1a1a;">UXGROUP</span></div>
 </div>
 
 <script>
@@ -626,9 +667,9 @@ function onWeeklyMonthChange(){
   renderWeeklySection();
 }
 
-function aggregateSelectedDays(){
-  const brandDaily = REAL_DATA.daily[currentBrand] || {};
-  const days = daysInMonthFor(currentBrand, selectedWeeklyMonth);
+function aggregateSelectedDaysForBrand(brand){
+  const brandDaily = REAL_DATA.daily[brand] || {};
+  const days = daysInMonthFor(brand, selectedWeeklyMonth);
   const chosen = (selectedWeeklyDays.length ? selectedWeeklyDays : days).sort((a,b)=>a-b);
   const dateKeys = chosen.map(d => selectedWeeklyMonth + '-' + String(d).padStart(2,'0')).filter(k => brandDaily[k]);
 
@@ -649,6 +690,10 @@ function aggregateSelectedDays(){
     .sort((a,b)=>b.count-a.count).slice(0,5);
 
   return { kpis, trend, offenders, dateKeys };
+}
+
+function aggregateSelectedDays(){
+  return aggregateSelectedDaysForBrand(currentBrand);
 }
 
 function weeklyPeriodLabel(){
@@ -849,6 +894,85 @@ chartAnnualStacked = new Chart(document.getElementById('chartAnnualStacked'), {
 });
 
 render();
+
+// ============================================================
+// REPORT SEMANAL — geração de imagem/PDF
+// ============================================================
+function reportDateLabel(){
+  const [year, month] = selectedWeeklyMonth.split('-').map(Number);
+  const monthStr = String(month).padStart(2,'0');
+  if (!selectedWeeklyDays.length){
+    const totalDays = new Date(year, month, 0).getDate();
+    return `01/${monthStr} — ${String(totalDays).padStart(2,'0')}/${monthStr}`;
+  }
+  const sorted = [...selectedWeeklyDays].sort((a,b)=>a-b);
+  if (sorted.length === 1) return `${String(sorted[0]).padStart(2,'0')}/${monthStr}`;
+  return sorted.map(d=>String(d).padStart(2,'0')).join(', ') + `/${monthStr}`;
+}
+
+function renderPrintReport(){
+  document.getElementById('rs-date').textContent = 'DATA: ' + reportDateLabel();
+  const body = document.getElementById('rs-body');
+  const brands = ['reals','bingo','betgo'];
+
+  body.innerHTML = brands.map(brand=>{
+    const agg = aggregateSelectedDaysForBrand(brand);
+    const color = BRAND_COLORS[brand];
+    const label = BRAND_LABELS[brand];
+    const initial = label.charAt(0);
+    const bulletsHtml = agg.offenders.length
+      ? '<ul>' + agg.offenders.slice(0,4).map(o=>
+          `<li><strong>${o.motivo}${o.submotivo ? ': '+o.submotivo : ''}</strong> <span style="color:#6b6f76;">(${o.classificacao} — ${fmt(o.count)})</span></li>`
+        ).join('') + '</ul>'
+      : '<div class="empty">Sem ofensores registrados nesse período.</div>';
+
+    return `
+      <div class="rs-brand">
+        <div class="rs-brand-head">
+          <div class="rs-brand-left">
+            <div class="rs-brand-icon" style="background:${color};">${initial}</div>
+            <div class="rs-brand-name">${label}</div>
+          </div>
+          <div class="rs-brand-demand">Demanda: <b>${fmt(agg.kpis.total)}</b> chamados</div>
+        </div>
+        <div class="rs-brand-underline" style="background:${color};"></div>
+        <div class="rs-box">
+          ${bulletsHtml}
+        </div>
+        <div class="rs-metric-note">Ticket médio dos clientes impactados: — (métrica sugerida, aguardando disponibilidade do dado)</div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function downloadReport(type){
+  renderPrintReport();
+  const el = document.getElementById('printReportArea');
+
+  await new Promise(r => setTimeout(r, 60)); // dá um tempo pro layout assentar
+
+  try{
+    const canvas = await html2canvas(el, { scale:2, backgroundColor:'#ffffff', useCORS:true, windowWidth:el.scrollWidth, windowHeight:el.scrollHeight });
+    const dateStr = reportDateLabel().replace(/\//g,'-').replace(/, /g,'_').replace(/ — /g,'_a_');
+    if (type === 'png'){
+      const link = document.createElement('a');
+      link.download = `report_semanal_${dateStr}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } else {
+      const { jsPDF } = window.jspdf;
+      const imgData = canvas.toDataURL('image/png');
+      const pdfWidth = 210; // A4 mm
+      const pdfHeight = canvas.height * pdfWidth / canvas.width;
+      const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:[pdfWidth, pdfHeight] });
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`report_semanal_${dateStr}.pdf`);
+    }
+  } catch(err){
+    console.error(err);
+    alert('Não foi possível gerar o arquivo. Tente novamente.');
+  }
+}
 
 </script>
 </body>
